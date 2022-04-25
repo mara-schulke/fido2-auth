@@ -1,0 +1,23 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+authors = ["Mara Schulke <mara@schulke.xyz>"]
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+async-std = { version = "1.10", features = ["attributes"] }
+bcrypt = "0.12.1"
+lazy_static = "*"
+log = "*"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "*"
+simple_logger = "*"
+tide = "0.16"
+uuid = { version = "*", features = ["v4", "serde"] }
+futures = "0.3"
+chrono = "*"
+jsonwebtoken = "8"
+webauthn-rs = { path = "../../webauthn-rs/webauthn-rs" }
