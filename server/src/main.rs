@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use async_std::sync::{Arc, Mutex};
 use lazy_static::lazy_static;
-//use rand::prelude::*;
+use rand::prelude::*;
 
 const BCRYPT_COST: u32 = 12;
 const JWT_SECRET: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -47,7 +47,7 @@ impl User {
             email,
             pw_hash: bcrypt::hash(password, BCRYPT_COST).unwrap(),
             status: VerificationStatus::Unverified {
-                code: 1, //code: thread_rng().gen_range(100000..999999),
+                code: thread_rng().gen_range(100000..999999),
             },
             keys: vec![],
             key_reg_state: None,
