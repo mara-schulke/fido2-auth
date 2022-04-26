@@ -13,13 +13,13 @@ ENV RUSTFLAGS="-C target-feature=-crt-static"
 COPY Cargo.toml Cargo.lock .
 RUN mkdir src && touch src/lib.rs
 RUN \
-  --mount=type=cache,target=/opt/target \
+  --mount=type=cache,target=/server/target \
   --mount=type=cache,target=/usr/local/cargo/registry \
   cargo build --release
 
 COPY . .
 RUN \
-  --mount=type=cache,target=/opt/target \
+  --mount=type=cache,target=/server/target \
   --mount=type=cache,target=/usr/local/cargo/registry \
   cargo clean -r -p auth-server && \
   cargo build --release && \
