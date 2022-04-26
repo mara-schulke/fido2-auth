@@ -343,6 +343,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "auth-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-std",
+ "bcrypt",
+ "chrono",
+ "futures",
+ "jsonwebtoken",
+ "lazy_static",
+ "log",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "simple_logger",
+ "tide",
+ "uuid",
+ "webauthn-rs",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -369,6 +390,7 @@ checksum = "904dfeac50f3cdaba28fc6f57fdcddb75f49ed61346676a78c4ffe55877802fd"
 [[package]]
 name = "base64urlsafedata"
 version = "0.1.0"
+source = "git+https://github.com/kanidm/webauthn-rs.git?rev=8ccfb0b3837c9111702757001bc77648e7c17569#8ccfb0b3837c9111702757001bc77648e7c17569"
 dependencies = [
  "base64 0.13.0",
  "serde",
@@ -1560,27 +1582,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-std",
- "bcrypt",
- "chrono",
- "futures",
- "jsonwebtoken",
- "lazy_static",
- "log",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "simple_logger",
- "tide",
- "uuid",
- "webauthn-rs",
-]
-
-[[package]]
 name = "sha1"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2128,6 +2129,7 @@ dependencies = [
 [[package]]
 name = "webauthn-rs"
 version = "0.1.0"
+source = "git+https://github.com/kanidm/webauthn-rs.git?rev=8ccfb0b3837c9111702757001bc77648e7c17569#8ccfb0b3837c9111702757001bc77648e7c17569"
 dependencies = [
  "base64urlsafedata",
  "serde",
@@ -2139,6 +2141,7 @@ dependencies = [
 [[package]]
 name = "webauthn-rs-core"
 version = "0.4.0-dev"
+source = "git+https://github.com/kanidm/webauthn-rs.git?rev=8ccfb0b3837c9111702757001bc77648e7c17569#8ccfb0b3837c9111702757001bc77648e7c17569"
 dependencies = [
  "base64 0.13.0",
  "base64urlsafedata",
@@ -2159,6 +2162,7 @@ dependencies = [
 [[package]]
 name = "webauthn-rs-proto"
 version = "0.1.0"
+source = "git+https://github.com/kanidm/webauthn-rs.git?rev=8ccfb0b3837c9111702757001bc77648e7c17569#8ccfb0b3837c9111702757001bc77648e7c17569"
 dependencies = [
  "base64urlsafedata",
  "serde",

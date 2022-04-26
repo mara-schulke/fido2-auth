@@ -1,5 +1,5 @@
 [package]
-name = "server"
+name = "auth-server"
 version = "0.1.0"
 edition = "2021"
 authors = ["Mara Schulke <mara@schulke.xyz>"]
@@ -20,4 +20,7 @@ uuid = { version = "*", features = ["v4", "serde"] }
 futures = "0.3"
 chrono = "*"
 jsonwebtoken = "8"
-webauthn-rs = { path = "../../webauthn-rs/webauthn-rs" }
+
+[dependencies.webauthn-rs]
+git = "https://github.com/kanidm/webauthn-rs.git"
+rev = "8ccfb0b3837c9111702757001bc77648e7c17569"
