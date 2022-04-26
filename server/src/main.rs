@@ -9,12 +9,12 @@ use std::collections::HashMap;
 
 use async_std::sync::{Arc, Mutex};
 use lazy_static::lazy_static;
-use rand::prelude::*;
+//use rand::prelude::*;
 
 const BCRYPT_COST: u32 = 12;
-const JWT_SECRET: [u8; 0] = [];
+const JWT_SECRET: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 const SITE_ID: &str = "localhost";
-const SITE_URL: &str = "http://localhost:8080";
+const SITE_URL: &str = "http://localhost:1234";
 
 lazy_static! {
     static ref WEBAUTHN: Webauthn = {
@@ -34,8 +34,9 @@ pub struct User {
     id: Uuid,
     email: String,
     pw_hash: String,
-    keys: Option<Vec<SecurityKey>>,
-    reg_state: Option<SecurityKeyRegistration>,
+    keys: Vec<SecurityKey>,
+    key_reg_status: Option<SecurityKeyRegistration>,
+    key_auth_status: Option<SecurityKeyAuthentication>,
     status: VerificationStatus,
 }
 
@@ -46,10 +47,11 @@ impl User {
             email,
             pw_hash: bcrypt::hash(password, BCRYPT_COST).unwrap(),
             status: VerificationStatus::Unverified {
-                code: thread_rng().gen_range(100000..999999),
+                code: 1, //code: thread_rng().gen_range(100000..999999),
             },
-            keys: None,
-            reg_state: None,
+            keys: vec![],
+            key_reg_status: None,
+            key_auth_status: None,
         }
     }
 }
@@ -80,7 +82,7 @@ impl Default for State {
 }
 
 mod middleware {
-    use super::{State, User, VerificationStatus};
+    use super::State;
     use futures::Future;
     use std::pin::Pin;
     use tide::{Next, Request, StatusCode};
@@ -110,23 +112,6 @@ mod middleware {
             };
 
             request.set_ext(user);
-
-            Ok(next.run(request).await)
-        })
-    }
-
-    pub fn verified<'a>(
-        request: Request<State>,
-        next: Next<'a, State>,
-    ) -> Pin<Box<dyn Future<Output = tide::Result> + Send + 'a>> {
-        Box::pin(async {
-            let user = request
-                .ext::<User>()
-                .expect("User needs to be present to check verification status");
-
-            if user.status != VerificationStatus::Verified {
-                return Ok(StatusCode::Forbidden.into());
-            }
 
             Ok(next.run(request).await)
         })
@@ -216,39 +201,74 @@ mod auth {
         match user.status {
             VerificationStatus::Unverified { code } if code == provided => {
                 let mut users = request.state().users.lock().await;
+
                 users
                     .entry(user.id)
                     .and_modify(|user| user.status = VerificationStatus::Verified);
+
                 log::debug!("{:#?}", users);
+
                 Ok(StatusCode::Ok.into())
             }
             _ => Ok(StatusCode::Forbidden.into()),
         }
     }
 
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct UserDetails {
+        token: String,
+        verified: bool,
+        keys: Vec<SecurityKey>,
+    }
+
     pub async fn login(mut request: Request<State>) -> Result {
         let Credentials { email, password } = request.body_json().await?;
+
         log::info!("login user {}", email);
 
-        let users = request.state().users.lock().await;
+        let mut users = request.state().users.lock().await;
 
         let user = users.values().find(|user| user.email == email);
         let user = match user {
             Some(user) => user.clone(),
-            None => return Ok(StatusCode::NotFound.into()),
+            None => return Ok(StatusCode::BadRequest.into()),
         };
 
-        if user.pw_hash != bcrypt::hash(password, BCRYPT_COST).unwrap() {
+        if !bcrypt::verify(password, &user.pw_hash).unwrap() {
+            log::warn!("wrong password");
             return Ok(StatusCode::BadRequest.into());
         }
 
-        if let Some(_) = user.keys {
+        if !user.keys.is_empty() {
             log::info!("user has security keys registered");
-            return Ok(StatusCode::InternalServerError.into());
+
+            let res = match WEBAUTHN.start_securitykey_authentication(&user.keys) {
+                Ok((rcr, status)) => {
+                    log::info!("created challenge {:#?} {:#?}", rcr, status);
+
+                    users
+                        .entry(user.id)
+                        .and_modify(|user| user.key_auth_status = Some(status));
+
+                    Response::builder(StatusCode::Ok)
+                        .body(Body::from_json(&rcr)?)
+                        .build()
+                }
+                Err(e) => {
+                    dbg!(e);
+                    StatusCode::BadRequest.into()
+                }
+            };
+
+            return Ok(res);
         }
 
         Ok(Response::builder(StatusCode::Ok)
-            .body(json!({ "token": jwt::issue(user.id) }))
+            .body(Body::from_json(&UserDetails {
+                token: jwt::issue(user.id),
+                verified: user.status == VerificationStatus::Verified,
+                keys: Vec::<SecurityKey>::new(),
+            })?)
             .build())
     }
 
@@ -261,10 +281,16 @@ mod auth {
                 .ext::<User>()
                 .expect("User needs to be present by middleware");
 
+            let exclude_credentials = user
+                .keys
+                .iter()
+                .map(|sk| sk.cred_id().clone())
+                .collect::<Vec<_>>();
+
             let res = match WEBAUTHN.start_securitykey_registration(
                 &user.id.as_hyphenated().to_string(),
-                None,
-                None,
+                Some(&user.email),
+                Some(exclude_credentials),
                 None,
             ) {
                 Ok((ccr, state)) => {
@@ -272,7 +298,7 @@ mod auth {
 
                     users
                         .entry(user.id)
-                        .and_modify(|user| user.reg_state = Some(state));
+                        .and_modify(|user| user.key_reg_status = Some(state));
 
                     Response::builder(tide::StatusCode::Ok)
                         .body(Body::from_json(&ccr)?)
@@ -292,22 +318,25 @@ mod auth {
 
             let reg = request.body_json::<RegisterPublicKeyCredential>().await?;
 
-            let reg_state = match user.reg_state {
+            let state = match user.key_reg_status {
                 Some(state) => state,
                 None => return Ok(StatusCode::Forbidden.into()),
             };
 
-            let res = match WEBAUTHN.finish_securitykey_registration(&reg, &reg_state) {
+            let res = match WEBAUTHN.finish_securitykey_registration(&reg, &state) {
                 Ok(key) => {
                     let mut users = request.state().users.lock().await;
 
                     users.entry(user.id).and_modify(|user| {
-                        let mut keys = user.keys.take().unwrap_or(vec![]);
-                        keys.push(key);
-                        user.keys = Some(keys);
+                        user.keys.push(key.clone());
+                        user.key_reg_status = None;
                     });
 
-                    StatusCode::Created.into()
+                    log::info!("{:#?}", users);
+
+                    Response::builder(StatusCode::Created)
+                        .body(json!({ "id": key.cred_id() }))
+                        .build()
                 }
                 Err(e) => {
                     dbg!(e);
@@ -316,6 +345,47 @@ mod auth {
             };
 
             Ok(res)
+        }
+
+        pub async fn remove_key(_: Request<State>) -> Result {
+            Ok(StatusCode::InternalServerError.into())
+        }
+
+        pub async fn login(mut request: Request<State>) -> Result {
+            let auth = request.body_json::<PublicKeyCredential>().await?;
+
+            dbg!(auth);
+
+            //let res = match WEBAUTHN.finish_securitykey_authentication(&auth, &auth_state) {
+
+            //}
+            //Ok(auth_result) => {
+            //let mut users_guard = request.state().users.lock().await;
+
+            //// Update the credential counter, if possible.
+
+            //users_guard
+            //.get_mut(&username)
+            //.map(|user| {
+            //user.keys.iter_mut().for_each(|sk| {
+            //if sk.cred_id() == &auth_result.cred_id {
+            //sk.update_credential_counter(auth_result.counter)
+            //}
+            //})
+            //})
+            //.ok_or_else(|| {
+            //tide::Error::new(400u16, anyhow::Error::msg("User has no credentials"))
+            //})?;
+
+            //tide::Response::builder(tide::StatusCode::Ok).build()
+            //}
+            //Err(e) => {
+            //log::debug!("challenge_register -> {:?}", e);
+            //tide::Response::builder(tide::StatusCode::BadRequest).build()
+            //}
+            //};
+
+            Ok(StatusCode::InternalServerError.into())
         }
     }
 }
@@ -401,8 +471,6 @@ async fn start_authentication(_: tide::Request<State>) -> tide::Result {
 
 #[allow(unused)]
 async fn finish_authentication(_: tide::Request<State>) -> tide::Result {
-    //let auth = request.body_json::<PublicKeyCredential>().await?;
-
     //let session = request.session_mut();
 
     //let username: String = session
@@ -448,41 +516,6 @@ async fn finish_authentication(_: tide::Request<State>) -> tide::Result {
     Ok(StatusCode::InternalServerError.into())
 }
 
-// 7. That's it! The user has now authenticated!
-
-// =======
-// Below is glue/stubs that are needed to make the above work, but don't really affect
-// the work flow too much.
-
-async fn index_view(_request: tide::Request<State>) -> tide::Result {
-    let mut res = tide::Response::new(200);
-    res.set_content_type("text/html;charset=utf-8");
-    res.set_body(
-        r#"
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>WebAuthn-rs Tutorial</title>
-
-    <script type="module">
-        import init, { run_app } from './pkg/wasm.js';
-        async function main() {
-           await init('./pkg/wasm_bg.wasm');
-           run_app();
-        }
-        main()
-    </script>
-  </head>
-  <body>
-  </body>
-</html>
-    "#,
-    );
-    Ok(res)
-}
-
 #[async_std::main]
 async fn main() -> tide::Result<()> {
     simple_logger::SimpleLogger::default()
@@ -494,7 +527,7 @@ async fn main() -> tide::Result<()> {
     use tide::security::{CorsMiddleware, Origin};
 
     let cors = CorsMiddleware::new()
-        .allow_methods("GET, POST, OPTIONS".parse::<HeaderValue>().unwrap())
+        .allow_methods("GET, POST, DELETE, OPTIONS".parse::<HeaderValue>().unwrap())
         .allow_origin(Origin::from("*"))
         .allow_credentials(false);
 
@@ -511,22 +544,14 @@ async fn main() -> tide::Result<()> {
 
     app.at("/auth/fido2/challenges")
         .with(middleware::authenticated)
-        .with(middleware::verified)
         .post(auth::fido2::create_challenge);
     app.at("/auth/fido2/keys")
         .with(middleware::authenticated)
-        .with(middleware::verified)
-        .post(auth::fido2::store_key);
-
-    //app.at("/auth/keys/verify").post(finish_register);
-
-    //app.at("/auth/login/").post(start_authentication);
-    //app.at("/auth/login/verify").post(finish_authentication);
-
-    app.at("/").get(index_view);
-    app.at("/*").get(index_view);
-
-    log::info!("Spawning on http://localhost:8080");
+        .post(auth::fido2::store_key)
+        .delete(auth::fido2::remove_key);
+    app.at("/auth/fido2/login")
+        .with(middleware::authenticated)
+        .post(auth::fido2::login);
 
     app.listen("127.0.0.1:8080").await?;
 
