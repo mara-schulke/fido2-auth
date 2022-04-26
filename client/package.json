@@ -9,7 +9,9 @@
   "version": "1.0.0",
   "main": "app.js",
   "dependencies": {
-    "cbor": "^8.1.0"
+    "base64-js": "^1.5.1",
+    "cbor": "^8.1.0",
+    "js-base64": "^3.7.2"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
