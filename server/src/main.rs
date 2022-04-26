@@ -35,8 +35,8 @@ pub struct User {
     email: String,
     pw_hash: String,
     keys: Vec<SecurityKey>,
-    key_reg_status: Option<SecurityKeyRegistration>,
-    key_auth_status: Option<SecurityKeyAuthentication>,
+    key_reg_state: Option<SecurityKeyRegistration>,
+    key_auth_state: Option<SecurityKeyAuthentication>,
     status: VerificationStatus,
 }
 
@@ -50,8 +50,8 @@ impl User {
                 code: 1, //code: thread_rng().gen_range(100000..999999),
             },
             keys: vec![],
-            key_reg_status: None,
-            key_auth_status: None,
+            key_reg_state: None,
+            key_auth_state: None,
         }
     }
 }
@@ -206,8 +206,6 @@ mod auth {
                     .entry(user.id)
                     .and_modify(|user| user.status = VerificationStatus::Verified);
 
-                log::debug!("{:#?}", users);
-
                 Ok(StatusCode::Ok.into())
             }
             _ => Ok(StatusCode::Forbidden.into()),
@@ -218,7 +216,22 @@ mod auth {
     struct UserDetails {
         token: String,
         verified: bool,
-        keys: Vec<SecurityKey>,
+        keys: Vec<String>,
+    }
+
+    impl UserDetails {
+        pub fn new(user: &User) -> Self {
+            Self {
+                token: jwt::issue(user.id),
+                verified: user.status == VerificationStatus::Verified,
+                keys: user
+                    .keys
+                    .clone()
+                    .iter()
+                    .map(|k| k.cred_id().to_string())
+                    .collect(),
+            }
+        }
     }
 
     pub async fn login(mut request: Request<State>) -> Result {
@@ -244,11 +257,11 @@ mod auth {
 
             let res = match WEBAUTHN.start_securitykey_authentication(&user.keys) {
                 Ok((rcr, status)) => {
-                    log::info!("created challenge {:#?} {:#?}", rcr, status);
+                    log::info!("created challenge");
 
                     users
                         .entry(user.id)
-                        .and_modify(|user| user.key_auth_status = Some(status));
+                        .and_modify(|user| user.key_auth_state = Some(status));
 
                     Response::builder(StatusCode::Ok)
                         .body(Body::from_json(&rcr)?)
@@ -264,11 +277,7 @@ mod auth {
         }
 
         Ok(Response::builder(StatusCode::Ok)
-            .body(Body::from_json(&UserDetails {
-                token: jwt::issue(user.id),
-                verified: user.status == VerificationStatus::Verified,
-                keys: Vec::<SecurityKey>::new(),
-            })?)
+            .body(Body::from_json(&UserDetails::new(&user))?)
             .build())
     }
 
@@ -298,7 +307,7 @@ mod auth {
 
                     users
                         .entry(user.id)
-                        .and_modify(|user| user.key_reg_status = Some(state));
+                        .and_modify(|user| user.key_reg_state = Some(state));
 
                     Response::builder(tide::StatusCode::Ok)
                         .body(Body::from_json(&ccr)?)
@@ -318,7 +327,7 @@ mod auth {
 
             let reg = request.body_json::<RegisterPublicKeyCredential>().await?;
 
-            let state = match user.key_reg_status {
+            let state = match user.key_reg_state {
                 Some(state) => state,
                 None => return Ok(StatusCode::Forbidden.into()),
             };
@@ -329,10 +338,8 @@ mod auth {
 
                     users.entry(user.id).and_modify(|user| {
                         user.keys.push(key.clone());
-                        user.key_reg_status = None;
+                        user.key_reg_state = None;
                     });
-
-                    log::info!("{:#?}", users);
 
                     Response::builder(StatusCode::Created)
                         .body(json!({ "id": key.cred_id() }))
@@ -347,173 +354,100 @@ mod auth {
             Ok(res)
         }
 
-        pub async fn remove_key(_: Request<State>) -> Result {
-            Ok(StatusCode::InternalServerError.into())
+        pub async fn remove_key(request: Request<State>) -> Result {
+            let user = request
+                .ext::<User>()
+                .expect("User needs to be present by middleware")
+                .clone();
+
+            let id = request.param("id").unwrap();
+
+            if user
+                .keys
+                .iter()
+                .find(|k| k.cred_id().to_string() == id)
+                .is_none()
+            {
+                return Ok(StatusCode::NotFound.into());
+            }
+
+            let mut users = request.state().users.lock().await;
+
+            users.entry(user.id).and_modify(|user| {
+                user.keys = user
+                    .keys
+                    .iter()
+                    .filter(|k| k.cred_id().to_string() != id)
+                    .cloned()
+                    .collect()
+            });
+
+            Ok(StatusCode::Ok.into())
         }
 
         pub async fn login(mut request: Request<State>) -> Result {
             let auth = request.body_json::<PublicKeyCredential>().await?;
 
-            dbg!(auth);
+            let users = request.state().users.lock().await;
 
-            //let res = match WEBAUTHN.finish_securitykey_authentication(&auth, &auth_state) {
+            let user = users
+                .values()
+                .find(|user| {
+                    if let Some(status) = user.key_auth_state.clone() {
+                        let json = serde_json::to_value(&status).unwrap();
+                        let credential_ids: Vec<String> = json["ast"]["credentials"]
+                            .as_array()
+                            .unwrap()
+                            .into_iter()
+                            .map(|v| v["cred_id"].as_str().unwrap().to_owned())
+                            .collect();
 
-            //}
-            //Ok(auth_result) => {
-            //let mut users_guard = request.state().users.lock().await;
+                        return credential_ids.contains(&auth.id);
+                    }
 
-            //// Update the credential counter, if possible.
+                    false
+                })
+                .clone();
 
-            //users_guard
-            //.get_mut(&username)
-            //.map(|user| {
-            //user.keys.iter_mut().for_each(|sk| {
-            //if sk.cred_id() == &auth_result.cred_id {
-            //sk.update_credential_counter(auth_result.counter)
-            //}
-            //})
-            //})
-            //.ok_or_else(|| {
-            //tide::Error::new(400u16, anyhow::Error::msg("User has no credentials"))
-            //})?;
+            if user.is_none() {
+                return Ok(StatusCode::BadRequest.into());
+            }
 
-            //tide::Response::builder(tide::StatusCode::Ok).build()
-            //}
-            //Err(e) => {
-            //log::debug!("challenge_register -> {:?}", e);
-            //tide::Response::builder(tide::StatusCode::BadRequest).build()
-            //}
-            //};
+            let user = user.unwrap().clone();
+            drop(users);
 
-            Ok(StatusCode::InternalServerError.into())
+            if user.key_auth_state.is_none() {
+                return Ok(StatusCode::BadRequest.into());
+            }
+
+            let res = match WEBAUTHN
+                .finish_securitykey_authentication(&auth, &user.key_auth_state.clone().unwrap())
+            {
+                Ok(auth_result) => {
+                    let mut users = request.state().users.lock().await;
+
+                    users.entry(user.id).and_modify(|user| {
+                        user.keys.iter_mut().for_each(|sk| {
+                            if sk.cred_id() == &auth_result.cred_id {
+                                sk.update_credential_counter(auth_result.counter)
+                            }
+                        });
+                        user.key_auth_state = None;
+                    });
+
+                    Response::builder(StatusCode::Ok)
+                        .body(Body::from_json(&UserDetails::new(&user))?)
+                        .build()
+                }
+                Err(e) => {
+                    log::debug!("{:?}", e);
+                    StatusCode::BadRequest.into()
+                }
+            };
+
+            Ok(res)
         }
     }
-}
-
-// 5. Now that our public key has been registered, we can authenticate a user and verify
-// that they are the holder of that security token. The work flow is similar to registration.
-//
-//          ┌───────────────┐     ┌───────────────┐      ┌───────────────┐
-//          │ Authenticator │     │    Browser    │      │     Site      │
-//          └───────────────┘     └───────────────┘      └───────────────┘
-//                  │                     │                      │
-//                  │                     │     1. Start Auth    │
-//                  │                     │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶│
-//                  │                     │                      │
-//                  │                     │     2. Challenge     │
-//                  │                     │◀ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┤
-//                  │                     │                      │
-//                  │  3. Select Token    │                      │
-//             ─ ─ ─│◀ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│                      │
-//  4. Verify │     │                     │                      │
-//                  │    4. Yield Sig     │                      │
-//            └ ─ ─▶│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶                      │
-//                  │                     │    5. Send Auth      │
-//                  │                     │        Opts          │
-//                  │                     │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶│─ ─ ─
-//                  │                     │                      │     │ 5. Verify
-//                  │                     │                      │          Sig
-//                  │                     │                      │◀─ ─ ┘
-//                  │                     │                      │
-//                  │                     │                      │
-//
-// The user indicates the wish to start authentication and we need to provide a challenge.
-
-#[allow(unused)]
-async fn start_authentication(_: tide::Request<State>) -> tide::Result {
-    //log::info!("Start Authentication");
-    //// We get the username from the URL, but you could get this via form submission or
-    //// some other process.
-    //let username: String = request.param("username")?.parse()?;
-
-    //// Remove any previous authentication that may have occured from the session.
-    //let session = request.session_mut();
-    //session.remove("auth_state");
-
-    //// Get the set of keys that the user possesses
-    //let users_guard = request.state().users.lock().await;
-    //let allow_credentials = users_guard
-    //.get(&username)
-    //.map(|user| &user.keys)
-    //.ok_or_else(|| tide::Error::new(400u16, anyhow::Error::msg("User has no credentials")))?;
-
-    //let res = match WEBAUTHN.start_securitykey_authentication(allow_credentials) {
-    //Ok((rcr, auth_state)) => {
-    //// Drop the mutex to allow the mut borrows below to proceed
-    //drop(users_guard);
-
-    //request
-    //.session_mut()
-    //.insert("auth_state", auth_state)
-    //.expect("Failed to insert");
-    //request
-    //.session_mut()
-    //.insert("username", username)
-    //.expect("Failed to insert");
-    //tide::Response::builder(tide::StatusCode::Ok)
-    //.body(tide::Body::from_json(&rcr)?)
-    //.build()
-    //}
-    //Err(e) => {
-    //log::debug!("challenge_authenticate -> {:?}", e);
-    //tide::Response::builder(tide::StatusCode::BadRequest).build()
-    //}
-    //};
-    //Ok(res)
-    //
-    Ok(StatusCode::InternalServerError.into())
-}
-
-// 6. The browser and user have completed their part of the processing. Only in the
-// case that the webauthn authenticate call returns Ok, is authentication considered
-// a success. If the browser does not complete this call, or *any* error occurs,
-// this is an authentication failure.
-
-#[allow(unused)]
-async fn finish_authentication(_: tide::Request<State>) -> tide::Result {
-    //let session = request.session_mut();
-
-    //let username: String = session
-    //.get("username")
-    //.ok_or_else(|| tide::Error::new(500u16, anyhow::Error::msg("Corrupt Session")))?;
-
-    //let auth_state = session
-    //.get("auth_state")
-    //.ok_or_else(|| tide::Error::new(500u16, anyhow::Error::msg("Corrupt Session")))?;
-
-    //session.remove("username");
-    //session.remove("auth_state");
-
-    //let res = match WEBAUTHN.finish_securitykey_authentication(&auth, &auth_state) {
-    //Ok(auth_result) => {
-    //let mut users_guard = request.state().users.lock().await;
-
-    //// Update the credential counter, if possible.
-
-    //users_guard
-    //.get_mut(&username)
-    //.map(|user| {
-    //user.keys.iter_mut().for_each(|sk| {
-    //if sk.cred_id() == &auth_result.cred_id {
-    //sk.update_credential_counter(auth_result.counter)
-    //}
-    //})
-    //})
-    //.ok_or_else(|| {
-    //tide::Error::new(400u16, anyhow::Error::msg("User has no credentials"))
-    //})?;
-
-    //tide::Response::builder(tide::StatusCode::Ok).build()
-    //}
-    //Err(e) => {
-    //log::debug!("challenge_register -> {:?}", e);
-    //tide::Response::builder(tide::StatusCode::BadRequest).build()
-    //}
-    //};
-
-    //Ok(res)
-    //
-    Ok(StatusCode::InternalServerError.into())
 }
 
 #[async_std::main]
@@ -542,16 +476,16 @@ async fn main() -> tide::Result<()> {
         .with(middleware::authenticated)
         .post(auth::verify);
 
+    app.at("/auth/fido2/login").post(auth::fido2::login);
     app.at("/auth/fido2/challenges")
         .with(middleware::authenticated)
         .post(auth::fido2::create_challenge);
     app.at("/auth/fido2/keys")
         .with(middleware::authenticated)
-        .post(auth::fido2::store_key)
-        .delete(auth::fido2::remove_key);
-    app.at("/auth/fido2/login")
+        .post(auth::fido2::store_key);
+    app.at("/auth/fido2/keys/:id")
         .with(middleware::authenticated)
-        .post(auth::fido2::login);
+        .delete(auth::fido2::remove_key);
 
     app.listen("127.0.0.1:8080").await?;
 
