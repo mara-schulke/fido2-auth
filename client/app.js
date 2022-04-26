@@ -142,20 +142,32 @@ async function login() {
 
     setState({ loading: false });
 
-    console.log("Received challenge!");
+    body.publicKey.allowCredentials = body.publicKey.allowCredentials.map(cred => ({
+        type: cred.type,
+        id: Base64.toUint8Array(cred.id)
+    }));
 
-    console.warn("Decode fields of challenge");
+    body.publicKey.challenge = Base64.toUint8Array(body.publicKey.challenge);
 
     let credentials = await navigator.credentials.get(body);
 
-    console.warn("Encode fields of credentials");
+    let mapped = { id: credentials.id, rawId: credentials.id, response: {}, type: credentials.type };
+    mapped.response.authenticatorData = Base64.fromUint8Array(new Uint8Array(
+        credentials.response.authenticatorData
+    ), true);
+    mapped.response.clientDataJSON = Base64.fromUint8Array(new Uint8Array(
+        credentials.response.clientDataJSON
+    ), true);
+    mapped.response.signature = Base64.fromUint8Array(new Uint8Array(
+        credentials.response.signature
+    ), true);
 
     setState({ loading: true });
 
-    response = await fetch("http://localhost:8080/auth/fido2/verify", {
+    response = await fetch("http://localhost:8080/auth/fido2/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(credentials)
+        body: JSON.stringify(mapped)
     });
 
     body = await response.json();
@@ -236,14 +248,25 @@ async function addKey() {
     setState({ loading: false, keys: [...(state.keys ?? []), key.id] });
 };
 
-function arrayBufferToBase64(buffer) {
-    let binary = '';
-    let bytes = new Uint8Array( buffer );
-    let len = bytes.byteLength;
+async function removeKey() {
+    setState({ loading: true });
 
-    for (var i = 0; i < len; i++) {
-        binary += String.fromCharCode( bytes[ i ] );
+    const id = prompt("Key ID");
+
+    let response = await fetch(`http://localhost:8080/auth/fido2/keys/${id}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${state.token}` },
+    });
+
+    if (response.status == 404) {
+        setState({ loading: false });
+        return console.error("Key not found");
     }
 
-    return window.btoa(binary);
+    if (response.status != 200) {
+        setState({ loading: false });
+        return console.error("Please try again");
+    }
+
+    setState({ loading: false, keys: (state.keys ?? []).filter(key => key != id) });
 }
