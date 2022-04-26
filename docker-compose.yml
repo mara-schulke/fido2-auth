@@ -4,11 +4,9 @@ services:
   auth:
     build:
       context: server
-      file: server/Dockerfile
     network_mode: host
   ui:
     build:
       context: ui
-      file: ui/Dockerfile
     network_mode: host
 
