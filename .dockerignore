@@ -1,0 +1,7 @@
+*
+!/server/Cargo.*
+!/server/src/*
+!/ui/app.js
+!/ui/index.html
+!/ui/package.json
+!/ui/package-lock.json
