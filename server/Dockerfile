@@ -10,7 +10,7 @@ WORKDIR /server
 ENV SODIUM_USE_PKG_CONFIG=1
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 
-COPY Cargo.toml Cargo.lock .
+COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && touch src/lib.rs
 RUN \
   --mount=type=cache,target=/server/target \

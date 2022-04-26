@@ -14,7 +14,7 @@ use rand::prelude::*;
 const BCRYPT_COST: u32 = 12;
 const JWT_SECRET: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 const SITE_ID: &str = "localhost";
-const SITE_URL: &str = "http://localhost:1234";
+const SITE_URL: &str = "http://localhost:80";
 
 lazy_static! {
     static ref WEBAUTHN: Webauthn = {
