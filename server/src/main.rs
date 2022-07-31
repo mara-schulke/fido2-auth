@@ -172,16 +172,13 @@ mod auth {
             return Ok(StatusCode::Forbidden.into());
         }
 
-        log::debug!("before bcrypt");
         let user = User::new(email, password);
-        let id = user.id;
-        log::debug!("after bcrypt");
 
         log::info!("created {:#?}", user);
-        users.insert(user.id, user);
+        users.insert(user.id, user.clone());
 
         Ok(Response::builder(StatusCode::Created)
-            .body(json!({ "token": jwt::issue(id) }))
+            .body(Body::from_json(&UserDetails::new(&user))?)
             .build())
     }
 
